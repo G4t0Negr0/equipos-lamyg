@@ -1,9 +1,10 @@
+import os
 from fastapi import FastAPI
 from supabase import create_client
 from datetime import date, timedelta
 
-SUPABASE_URL = "https://yjkxvgillxyfemazczlu.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlqa3h2Z2lsbHh5ZmVtYXpjemx1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTcxMzksImV4cCI6MjA5NzM3MzEzOX0.Ur4prZiESRkIcJ52t-LjBNnRB5zDaKx4BfrhZUZ-748"  # tu clave legacy anon
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="Sistema de Equipos LAMYG")
