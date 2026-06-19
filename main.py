@@ -52,3 +52,10 @@ def crear_equipo(equipo: dict):
 def registrar_calibracion(codigo: str, datos: dict):
     result = supabase.table("equipos").update(datos).eq("codigo", codigo).execute()
     return result.data
+
+@app.delete("/equipos/{codigo}")
+def eliminar_equipo(codigo: str):
+    response = supabase.table("equipos").delete().eq("codigo", codigo).execute()
+    if response.data:
+        return {"mensaje": f"Equipo {codigo} eliminado"}
+    raise HTTPException(status_code=404, detail="Equipo no encontrado")
