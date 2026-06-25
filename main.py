@@ -1,13 +1,46 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from datetime import date, timedelta
+from functools import wraps
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+API_SECRET = os.environ.get("API_SECRET")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="Sistema de Equipos LAMYG")
+
+# Permitir peticiones desde la app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Verificar API Key en cada petición
+@app.middleware("http")
+async def verificar_api_key(request: Request, call_next):
+    # Permitir docs sin autenticación
+    if request.url.path in ["/", "/docs", "/openapi.json", "/redoc"]:
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if api_key != API_SECRET:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "API Key inválida o no proporcionada"}
+        )
+    return await call_next(request)
+
+
+@app.get("/")
+def inicio():
+    return {"mensaje": "API Equipos LAMYG activa"}
 
 
 @app.get("/equipos")
@@ -38,35 +71,72 @@ def alertas_calibracion():
 def detalle_equipo(codigo: str):
     result = supabase.table("equipos").select("*").eq("codigo", codigo).execute()
     if not result.data:
-        return {"error": "Equipo no encontrado"}
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
     return result.data[0]
 
 
 @app.post("/equipos")
 def crear_equipo(equipo: dict):
-    result = supabase.table("equipos").insert(equipo).execute()
+    # Validar campos obligatorios
+    if not equipo.get("nombre") or not equipo.get("codigo"):
+        raise HTTPException(status_code=400, detail="Nombre y código son obligatorios")
+    # Validar que el código no exista
+    existe = supabase.table("equipos").select("codigo").eq("codigo", equipo["codigo"]).execute()
+    if existe.data:
+        raise HTTPException(status_code=400, detail="Ya existe un equipo con ese código")
+    # Filtrar solo campos permitidos
+    campos_permitidos = [
+        'nombre', 'codigo', 'marca', 'modelo', 'numero_serie',
+        'rango_capacidad', 'resolucion', 'normas_asociadas', 'tipo',
+        'fecha_verificacion', 'fecha_proxima_verificacion',
+        'fecha_calibracion', 'fecha_proxima_calibracion',
+        'periodo_calibracion', 'calibrado_por',
+        'fecha_mantenimiento', 'fecha_proximo_mantenimiento',
+        'periodo_mantenimiento', 'puntos_calibracion',
+        'responsable', 'observaciones', 'estado'
+    ]
+    datos_limpios = {k: v for k, v in equipo.items() if k in campos_permitidos}
+    result = supabase.table("equipos").insert(datos_limpios).execute()
     return result.data
+
+
+@app.put("/equipos/{codigo}")
+def actualizar_equipo(codigo: str, datos: dict):
+    # Validar que el equipo exista
+    existe = supabase.table("equipos").select("codigo").eq("codigo", codigo).execute()
+    if not existe.data:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    # Filtrar solo campos permitidos (no permitir cambiar código)
+    campos_permitidos = [
+        'nombre', 'marca', 'modelo', 'numero_serie',
+        'rango_capacidad', 'resolucion', 'normas_asociadas', 'tipo',
+        'fecha_verificacion', 'fecha_proxima_verificacion',
+        'fecha_calibracion', 'fecha_proxima_calibracion',
+        'periodo_calibracion', 'calibrado_por',
+        'fecha_mantenimiento', 'fecha_proximo_mantenimiento',
+        'periodo_mantenimiento', 'puntos_calibracion',
+        'responsable', 'observaciones', 'estado'
+    ]
+    datos_limpios = {k: v for k, v in datos.items() if k in campos_permitidos and v is not None}
+    if not datos_limpios:
+        raise HTTPException(status_code=400, detail="No hay datos válidos para actualizar")
+    response = supabase.table("equipos").update(datos_limpios).eq("codigo", codigo).execute()
+    return response.data[0]
 
 
 @app.put("/equipos/{codigo}/calibracion")
 def registrar_calibracion(codigo: str, datos: dict):
+    existe = supabase.table("equipos").select("codigo").eq("codigo", codigo).execute()
+    if not existe.data:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
     result = supabase.table("equipos").update(datos).eq("codigo", codigo).execute()
     return result.data
 
+
 @app.delete("/equipos/{codigo}")
 def eliminar_equipo(codigo: str):
-    response = supabase.table("equipos").delete().eq("codigo", codigo).execute()
-    if response.data:
-        return {"mensaje": f"Equipo {codigo} eliminado"}
-    raise HTTPException(status_code=404, detail="Equipo no encontrado")
-
-@app.put("/equipos/{codigo}")
-def actualizar_equipo(codigo: str, datos: dict):
-    # Filtrar campos que no sean None
-    campos = {k: v for k, v in datos.items() if v is not None}
-    if not campos:
-        raise HTTPException(status_code=400, detail="No hay datos para actualizar")
-    response = supabase.table("equipos").update(campos).eq("codigo", codigo).execute()
-    if response.data:
-        return response.data[0]
-    raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    existe = supabase.table("equipos").select("codigo").eq("codigo", codigo).execute()
+    if not existe.data:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    supabase.table("equipos").delete().eq("codigo", codigo).execute()
+    return {"mensaje": f"Equipo {codigo} eliminado"}
