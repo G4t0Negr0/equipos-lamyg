@@ -59,3 +59,14 @@ def eliminar_equipo(codigo: str):
     if response.data:
         return {"mensaje": f"Equipo {codigo} eliminado"}
     raise HTTPException(status_code=404, detail="Equipo no encontrado")
+
+@app.put("/equipos/{codigo}")
+def actualizar_equipo(codigo: str, datos: dict):
+    # Filtrar campos que no sean None
+    campos = {k: v for k, v in datos.items() if v is not None}
+    if not campos:
+        raise HTTPException(status_code=400, detail="No hay datos para actualizar")
+    response = supabase.table("equipos").update(campos).eq("codigo", codigo).execute()
+    if response.data:
+        return response.data[0]
+    raise HTTPException(status_code=404, detail="Equipo no encontrado")
