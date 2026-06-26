@@ -136,6 +136,57 @@ def listar_equipos(lab_id: str = None):
     result = query.execute()
     return result.data
 
+@app.get("/equipos/exportar")
+def exportar_equipos(lab_id: str = None):
+    import openpyxl
+    from fastapi.responses import Response
+    from io import BytesIO
+
+    query = supabase.table("equipos").select("*").order("nombre")
+    if lab_id:
+        query = query.eq("laboratorio_id", lab_id)
+    result = query.execute()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Equipos"
+
+    # Encabezados
+    headers = ["Nombre", "Código", "Marca", "N° Serie", "Rango/Capacidad",
+               "Fecha Calibración", "Próxima Calibración", "Calibrado por",
+               "Responsable", "Estado"]
+    ws.append(headers)
+
+    # Estilo encabezados
+    from openpyxl.styles import Font, PatternFill
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="0D47A1", end_color="0D47A1", fill_type="solid")
+
+    # Datos
+    for e in result.data:
+        ws.append([
+            e.get("nombre"), e.get("codigo"), e.get("marca"),
+            e.get("numero_serie"), e.get("rango_capacidad"),
+            e.get("fecha_calibracion"), e.get("fecha_proxima_calibracion"),
+            e.get("calibrado_por"), e.get("responsable"), e.get("estado"),
+        ])
+
+    # Ajustar ancho de columnas
+    for col in ws.columns:
+        max_length = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_length + 4, 30)
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=equipos.xlsx"}
+    )
+
 @app.get("/equipos/alertas")
 def alertas_calibracion(lab_id: str = None):
     hoy = date.today()
@@ -212,6 +263,8 @@ def registrar_calibracion(codigo: str, datos: dict):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     result = supabase.table("equipos").update(datos).eq("codigo", codigo).execute()
     return result.data
+
+
 
 @app.delete("/equipos/{codigo}")
 def eliminar_equipo(codigo: str):
