@@ -37,66 +37,55 @@ def inicio():
 
 # ==================== AUTH ====================
 
-@app.post("/auth/registro")
-def registrar_usuario(datos: dict):
+@app.post("/auth/login")
+def login(datos: dict):
     email = datos.get("email", "").strip().lower()
     password = datos.get("password", "")
-    nombre = datos.get("nombre", "").strip()
-    codigo_lab = datos.get("codigo_laboratorio", "").strip()
-    nombre_lab = datos.get("nombre_laboratorio", "").strip()
 
-    if not email or not password or not nombre:
-        raise HTTPException(status_code=400, detail="Email, contraseña y nombre son obligatorios")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email y contraseña son obligatorios")
 
-    # Verificar que el email no exista
-    existe = supabase.table("usuarios").select("id").eq("email", email).execute()
-    if existe.data:
-        raise HTTPException(status_code=400, detail="Ya existe un usuario con ese email")
+    usuario = supabase.table("usuarios").select("*").eq("email", email).execute()
+    if not usuario.data:
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
 
-    # Si da código de laboratorio, unirse a uno existente
-    if codigo_lab:
-        lab = supabase.table("laboratorios").select("id").eq("codigo_acceso", codigo_lab).execute()
-        if not lab.data:
-            raise HTTPException(status_code=404, detail="Código de laboratorio no encontrado")
-        lab_id = lab.data[0]["id"]
-        rol = "usuario"
-    # Si da nombre de laboratorio, crear uno nuevo
-    elif nombre_lab:
-        import random
-        import string
-        codigo_nuevo = nombre_lab[:4].upper() + "-" + ''.join(random.choices(string.digits, k=4))
-        nuevo_lab = supabase.table("laboratorios").insert({
-            "nombre": nombre_lab,
-            "codigo_acceso": codigo_nuevo
-        }).execute()
-        lab_id = nuevo_lab.data[0]["id"]
-        rol = "admin"
-    else:
-        raise HTTPException(status_code=400, detail="Debes ingresar un código de laboratorio o crear uno nuevo")
+    user = usuario.data[0]
+    if not bcrypt.checkpw(password.encode('utf-8'), user["password_hash"].encode('utf-8')):
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
 
-    # Hashear contraseña
-    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    # Obtener datos del laboratorio
+    lab = supabase.table("laboratorios").select("*").eq("id", user["laboratorio_id"]).execute()
+    if not lab.data:
+        raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
 
-    # Crear usuario
-    usuario = supabase.table("usuarios").insert({
-        "email": email,
-        "password_hash": password_hash,
-        "nombre": nombre,
-        "laboratorio_id": lab_id,
-        "rol": rol,
-    }).execute()
+    lab_data = lab.data[0]
+
+    # Verificar si el laboratorio está activo
+    if not lab_data.get("activo", True):
+        raise HTTPException(status_code=403, detail="CUENTA_INACTIVA")
+
+    # Verificar fecha de vencimiento
+    fecha_venc = lab_data.get("fecha_vencimiento")
+    if fecha_venc:
+        from datetime import date as date_class
+        if date_class.fromisoformat(fecha_venc) < date_class.today():
+            raise HTTPException(status_code=403, detail="TRIAL_VENCIDO")
+
+    dias_restantes = 0
+    if fecha_venc:
+        from datetime import date as date_class
+        dias_restantes = (date_class.fromisoformat(fecha_venc) - date_class.today()).days
 
     return {
-        "usuario_id": usuario.data[0]["id"],
-        "nombre": nombre,
-        "email": email,
-        "rol": rol,
-        "laboratorio_id": lab_id,
-        "codigo_laboratorio": codigo_lab if codigo_lab else codigo_nuevo,
+        "usuario_id": user["id"],
+        "nombre": user["nombre"],
+        "email": user["email"],
+        "rol": user["rol"],
+        "laboratorio_id": user["laboratorio_id"],
+        "laboratorio_nombre": lab_data["nombre"],
+        "codigo_laboratorio": lab_data["codigo_acceso"],
+        "dias_restantes": dias_restantes,
     }
-
 @app.post("/auth/login")
 def login(datos: dict):
     email = datos.get("email", "").strip().lower()
