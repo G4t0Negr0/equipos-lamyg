@@ -1,9 +1,9 @@
 import os
+import bcrypt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from datetime import date, timedelta
-from functools import wraps
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -12,7 +12,6 @@ API_SECRET = os.environ.get("API_SECRET")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="Sistema de Equipos LAMYG")
 
-# Permitir peticiones desde la app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,42 +19,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Verificar API Key en cada petición
+# Verificar API Key
 @app.middleware("http")
 async def verificar_api_key(request: Request, call_next):
-    # Permitir docs sin autenticación
-    if request.url.path in ["/", "/docs", "/openapi.json", "/redoc"]:
+    rutas_publicas = ["/", "/docs", "/openapi.json", "/redoc"]
+    if request.url.path in rutas_publicas:
         return await call_next(request)
-
     api_key = request.headers.get("X-API-Key")
     if api_key != API_SECRET:
         from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "API Key inválida o no proporcionada"}
-        )
+        return JSONResponse(status_code=401, content={"detail": "API Key inválida"})
     return await call_next(request)
-
 
 @app.get("/")
 def inicio():
     return {"mensaje": "API Equipos LAMYG activa"}
 
+# ==================== AUTH ====================
+
+@app.post("/auth/registro")
+def registrar_usuario(datos: dict):
+    email = datos.get("email", "").strip().lower()
+    password = datos.get("password", "")
+    nombre = datos.get("nombre", "").strip()
+    codigo_lab = datos.get("codigo_laboratorio", "").strip()
+    nombre_lab = datos.get("nombre_laboratorio", "").strip()
+
+    if not email or not password or not nombre:
+        raise HTTPException(status_code=400, detail="Email, contraseña y nombre son obligatorios")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+
+    # Verificar que el email no exista
+    existe = supabase.table("usuarios").select("id").eq("email", email).execute()
+    if existe.data:
+        raise HTTPException(status_code=400, detail="Ya existe un usuario con ese email")
+
+    # Si da código de laboratorio, unirse a uno existente
+    if codigo_lab:
+        lab = supabase.table("laboratorios").select("id").eq("codigo_acceso", codigo_lab).execute()
+        if not lab.data:
+            raise HTTPException(status_code=404, detail="Código de laboratorio no encontrado")
+        lab_id = lab.data[0]["id"]
+        rol = "usuario"
+    # Si da nombre de laboratorio, crear uno nuevo
+    elif nombre_lab:
+        import random
+        import string
+        codigo_nuevo = nombre_lab[:4].upper() + "-" + ''.join(random.choices(string.digits, k=4))
+        nuevo_lab = supabase.table("laboratorios").insert({
+            "nombre": nombre_lab,
+            "codigo_acceso": codigo_nuevo
+        }).execute()
+        lab_id = nuevo_lab.data[0]["id"]
+        rol = "admin"
+    else:
+        raise HTTPException(status_code=400, detail="Debes ingresar un código de laboratorio o crear uno nuevo")
+
+    # Hashear contraseña
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+    # Crear usuario
+    usuario = supabase.table("usuarios").insert({
+        "email": email,
+        "password_hash": password_hash,
+        "nombre": nombre,
+        "laboratorio_id": lab_id,
+        "rol": rol,
+    }).execute()
+
+    return {
+        "usuario_id": usuario.data[0]["id"],
+        "nombre": nombre,
+        "email": email,
+        "rol": rol,
+        "laboratorio_id": lab_id,
+        "codigo_laboratorio": codigo_lab if codigo_lab else codigo_nuevo,
+    }
+
+@app.post("/auth/login")
+def login(datos: dict):
+    email = datos.get("email", "").strip().lower()
+    password = datos.get("password", "")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email y contraseña son obligatorios")
+
+    usuario = supabase.table("usuarios").select("*").eq("email", email).execute()
+    if not usuario.data:
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+
+    user = usuario.data[0]
+    if not bcrypt.checkpw(password.encode('utf-8'), user["password_hash"].encode('utf-8')):
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+
+    # Obtener código del laboratorio
+    lab = supabase.table("laboratorios").select("codigo_acceso, nombre").eq("id", user["laboratorio_id"]).execute()
+
+    return {
+        "usuario_id": user["id"],
+        "nombre": user["nombre"],
+        "email": user["email"],
+        "rol": user["rol"],
+        "laboratorio_id": user["laboratorio_id"],
+        "laboratorio_nombre": lab.data[0]["nombre"] if lab.data else "",
+        "codigo_laboratorio": lab.data[0]["codigo_acceso"] if lab.data else "",
+    }
+
+# ==================== EQUIPOS ====================
 
 @app.get("/equipos")
-def listar_equipos():
-    result = supabase.table("equipos").select("*").order("nombre").execute()
+def listar_equipos(lab_id: str = None):
+    query = supabase.table("equipos").select("*").order("nombre")
+    if lab_id:
+        query = query.eq("laboratorio_id", lab_id)
+    result = query.execute()
     return result.data
 
-
 @app.get("/equipos/alertas")
-def alertas_calibracion():
+def alertas_calibracion(lab_id: str = None):
     hoy = date.today()
     limite = hoy + timedelta(days=60)
-    result = supabase.table("equipos").select(
-        "nombre, codigo, fecha_proxima_calibracion, calibrado_por, responsable"
-    ).lte("fecha_proxima_calibracion", str(limite)).order("fecha_proxima_calibracion").execute()
+    query = supabase.table("equipos").select(
+        "nombre, codigo, fecha_proxima_calibracion, calibrado_por, responsable, laboratorio_id"
+    ).lte("fecha_proxima_calibracion", str(limite)).order("fecha_proxima_calibracion")
+    if lab_id:
+        query = query.eq("laboratorio_id", lab_id)
+    result = query.execute()
 
     equipos = []
     for e in result.data:
@@ -66,7 +156,6 @@ def alertas_calibracion():
         equipos.append(e)
     return equipos
 
-
 @app.get("/equipos/{codigo}")
 def detalle_equipo(codigo: str):
     result = supabase.table("equipos").select("*").eq("codigo", codigo).execute()
@@ -74,17 +163,13 @@ def detalle_equipo(codigo: str):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     return result.data[0]
 
-
 @app.post("/equipos")
 def crear_equipo(equipo: dict):
-    # Validar campos obligatorios
     if not equipo.get("nombre") or not equipo.get("codigo"):
         raise HTTPException(status_code=400, detail="Nombre y código son obligatorios")
-    # Validar que el código no exista
     existe = supabase.table("equipos").select("codigo").eq("codigo", equipo["codigo"]).execute()
     if existe.data:
         raise HTTPException(status_code=400, detail="Ya existe un equipo con ese código")
-    # Filtrar solo campos permitidos
     campos_permitidos = [
         'nombre', 'codigo', 'marca', 'modelo', 'numero_serie',
         'rango_capacidad', 'resolucion', 'normas_asociadas', 'tipo',
@@ -93,20 +178,17 @@ def crear_equipo(equipo: dict):
         'periodo_calibracion', 'calibrado_por',
         'fecha_mantenimiento', 'fecha_proximo_mantenimiento',
         'periodo_mantenimiento', 'puntos_calibracion',
-        'responsable', 'observaciones', 'estado'
+        'responsable', 'observaciones', 'estado', 'laboratorio_id'
     ]
     datos_limpios = {k: v for k, v in equipo.items() if k in campos_permitidos}
     result = supabase.table("equipos").insert(datos_limpios).execute()
     return result.data
 
-
 @app.put("/equipos/{codigo}")
 def actualizar_equipo(codigo: str, datos: dict):
-    # Validar que el equipo exista
     existe = supabase.table("equipos").select("codigo").eq("codigo", codigo).execute()
     if not existe.data:
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
-    # Filtrar solo campos permitidos (no permitir cambiar código)
     campos_permitidos = [
         'nombre', 'marca', 'modelo', 'numero_serie',
         'rango_capacidad', 'resolucion', 'normas_asociadas', 'tipo',
@@ -123,7 +205,6 @@ def actualizar_equipo(codigo: str, datos: dict):
     response = supabase.table("equipos").update(datos_limpios).eq("codigo", codigo).execute()
     return response.data[0]
 
-
 @app.put("/equipos/{codigo}/calibracion")
 def registrar_calibracion(codigo: str, datos: dict):
     existe = supabase.table("equipos").select("codigo").eq("codigo", codigo).execute()
@@ -131,7 +212,6 @@ def registrar_calibracion(codigo: str, datos: dict):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     result = supabase.table("equipos").update(datos).eq("codigo", codigo).execute()
     return result.data
-
 
 @app.delete("/equipos/{codigo}")
 def eliminar_equipo(codigo: str):
