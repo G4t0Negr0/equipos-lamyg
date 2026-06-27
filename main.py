@@ -139,34 +139,6 @@ def login(datos: dict):
         "codigo_laboratorio": lab_data["codigo_acceso"],
         "dias_restantes": dias_restantes,
     }
-@app.post("/auth/login")
-def login(datos: dict):
-    email = datos.get("email", "").strip().lower()
-    password = datos.get("password", "")
-
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email y contraseña son obligatorios")
-
-    usuario = supabase.table("usuarios").select("*").eq("email", email).execute()
-    if not usuario.data:
-        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-
-    user = usuario.data[0]
-    if not bcrypt.checkpw(password.encode('utf-8'), user["password_hash"].encode('utf-8')):
-        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-
-    # Obtener código del laboratorio
-    lab = supabase.table("laboratorios").select("codigo_acceso, nombre").eq("id", user["laboratorio_id"]).execute()
-
-    return {
-        "usuario_id": user["id"],
-        "nombre": user["nombre"],
-        "email": user["email"],
-        "rol": user["rol"],
-        "laboratorio_id": user["laboratorio_id"],
-        "laboratorio_nombre": lab.data[0]["nombre"] if lab.data else "",
-        "codigo_laboratorio": lab.data[0]["codigo_acceso"] if lab.data else "",
-    }
 
 # ==================== EQUIPOS ====================
 
