@@ -36,7 +36,60 @@ def inicio():
     return {"mensaje": "API Equipos LAMYG activa"}
 
 # ==================== AUTH ====================
+@app.post("/auth/registro")
+def registrar_usuario(datos: dict):
+    email = datos.get("email", "").strip().lower()
+    password = datos.get("password", "")
+    nombre = datos.get("nombre", "").strip()
+    codigo_lab = datos.get("codigo_laboratorio", "").strip()
+    nombre_lab = datos.get("nombre_laboratorio", "").strip()
 
+    if not email or not password or not nombre:
+        raise HTTPException(status_code=400, detail="Email, contraseña y nombre son obligatorios")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+
+    existe = supabase.table("usuarios").select("id").eq("email", email).execute()
+    if existe.data:
+        raise HTTPException(status_code=400, detail="Ya existe un usuario con ese email")
+
+    if codigo_lab:
+        lab = supabase.table("laboratorios").select("id").eq("codigo_acceso", codigo_lab).execute()
+        if not lab.data:
+            raise HTTPException(status_code=404, detail="Código de laboratorio no encontrado")
+        lab_id = lab.data[0]["id"]
+        rol = "usuario"
+    elif nombre_lab:
+        import random
+        import string
+        codigo_nuevo = nombre_lab[:4].upper() + "-" + ''.join(random.choices(string.digits, k=4))
+        nuevo_lab = supabase.table("laboratorios").insert({
+            "nombre": nombre_lab,
+            "codigo_acceso": codigo_nuevo
+        }).execute()
+        lab_id = nuevo_lab.data[0]["id"]
+        rol = "admin"
+    else:
+        raise HTTPException(status_code=400, detail="Debes ingresar un código de laboratorio o crear uno nuevo")
+
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+    usuario = supabase.table("usuarios").insert({
+        "email": email,
+        "password_hash": password_hash,
+        "nombre": nombre,
+        "laboratorio_id": lab_id,
+        "rol": rol,
+    }).execute()
+
+    return {
+        "usuario_id": usuario.data[0]["id"],
+        "nombre": nombre,
+        "email": email,
+        "rol": rol,
+        "laboratorio_id": lab_id,
+        "codigo_laboratorio": codigo_lab if codigo_lab else codigo_nuevo,
+    }
 @app.post("/auth/login")
 def login(datos: dict):
     email = datos.get("email", "").strip().lower()
